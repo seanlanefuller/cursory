@@ -1,0 +1,13 @@
+cursory
+cursory.log
+test/cursory.log
+*.o
+.DS_Store
+.agents/
+.agent/
+_agents/
+_agent/
+brain/
+implementation_plan.md
+task.md
+walkthrough.md
