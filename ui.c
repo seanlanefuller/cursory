@@ -579,23 +579,39 @@ void calculate_layout(AppState *state) {
     int th = state->panels[PANEL_TERMINAL].visible ? (my-2)/4 : 0; if (th<3 && th>0) th=3;
     int uh = my-2-th; if (uh < 3) uh = 3;
     
-    int ciw = state->panels[PANEL_CHAT_INPUT].visible ? mx * 0.3 : 0;
-    if (ciw > 0 && ciw < 20) ciw = 20;
-    int tw = mx - ciw;
+    int vc = 0; for (int i=0; i<3; i++) if (state->panels[i].visible) vc++;
+    int x=0, fw = state->panels[PANEL_FILE_TREE].visible ? mx/5 : 0; if (fw>0 && fw<20) fw=20;
     
+    // Top Row
+    if (state->panels[PANEL_FILE_TREE].visible) { state->panels[PANEL_FILE_TREE] = (Panel){x, 1, fw, uh, true, "Files"}; x+=fw; }
+    int rem = mx-x; if (rem < 5) rem = 5;
+    int side_panels_visible = vc - (state->panels[PANEL_FILE_TREE].visible?1:0);
+    int ow = (side_panels_visible > 0) ? rem / side_panels_visible : rem;
+    
+    int split_x = mx - ow; // Default split if AI is the only side panel
+    if (state->panels[PANEL_EDITOR].visible && state->panels[PANEL_AI].visible) {
+        split_x = x + ow;
+    } else if (state->panels[PANEL_EDITOR].visible) {
+        split_x = mx; // No AI, split at end
+    } else if (state->panels[PANEL_AI].visible) {
+        split_x = x; // AI takes all besides Files
+    }
+
+    if (state->panels[PANEL_EDITOR].visible) { state->panels[PANEL_EDITOR] = (Panel){x, 1, ow, uh, true, "Editor"}; x+=ow; }
+    if (state->panels[PANEL_AI].visible) { state->panels[PANEL_AI] = (Panel){x, 1, mx-x, uh, true, "Chat History"}; }
+
+    // Bottom Row
+    // If AI is hidden but Chat Input is visible, we should still use a reasonable width (0.3 of screen or split_x)
+    if (!state->panels[PANEL_AI].visible && state->panels[PANEL_CHAT_INPUT].visible) {
+        split_x = mx - (int)(mx * 0.3);
+        if (split_x < 20) split_x = mx - 20;
+    }
+    
+    int tw = split_x; if (tw < 0) tw = 0;
+    int ciw = mx - tw; if (ciw < 0) ciw = 0;
+
     state->panels[PANEL_TERMINAL] = (Panel){0, my - 1 - th, tw, th, state->panels[PANEL_TERMINAL].visible, "Terminal"};
     state->panels[PANEL_CHAT_INPUT] = (Panel){tw, my - 1 - th, ciw, th, state->panels[PANEL_CHAT_INPUT].visible, "Chat Input"};
-
-    int vc = 0; for (int i=0; i<3; i++) if (state->panels[i].visible) vc++;
-    if (vc > 0) {
-        int x=0, fw = state->panels[PANEL_FILE_TREE].visible ? mx/5 : 0; if (fw>0 && fw<20) fw=20;
-        if (state->panels[PANEL_FILE_TREE].visible) { state->panels[PANEL_FILE_TREE] = (Panel){x, 1, fw, uh, true, "Files"}; x+=fw; }
-        int rem = mx-x; if (rem < 5) rem = 5;
-        int active_side_panels = vc - (state->panels[PANEL_FILE_TREE].visible?1:0);
-        int ow = (active_side_panels > 0) ? rem / active_side_panels : rem;
-        if (state->panels[PANEL_EDITOR].visible) { state->panels[PANEL_EDITOR] = (Panel){x, 1, ow, uh, true, "Editor"}; x+=ow; }
-        if (state->panels[PANEL_AI].visible) { state->panels[PANEL_AI] = (Panel){x, 1, mx-x, uh, true, "Chat History"}; }
-    }
 }
 
 
@@ -937,6 +953,111 @@ void app_select_all(AppState *state) {
     }
 }
 
+typedef struct {
+    char *name;
+    char *shortcut;
+} MenuItem;
+
+void show_help_menu(AppState *state) {
+    MenuItem items[] = {
+        {"Save File", ""},
+        {"Save As...", ""},
+        {"Select All", "Ctrl+A"},
+        {"Copy", "Ctrl+C"},
+        {"Cut", "Ctrl+X"},
+        {"Paste", "Ctrl+V"},
+        {"Run Python Script", "Ctrl+R"},
+        {"Toggle File Tree", "Alt+f"},
+        {"Toggle Editor", "Alt+e"},
+        {"Toggle AI Chat", "Alt+a"},
+        {"Toggle Terminal", "Alt+t"},
+        {"Quit Application", "Alt+q"},
+        {"Close Menu", "ESC"}
+    };
+    int num_items = sizeof(items) / sizeof(MenuItem);
+    
+    int max_y, max_x; getmaxyx(stdscr, max_y, max_x);
+    int hw = 60, hh = num_items + 6;
+    int hy = (max_y - hh) / 2; int hx = (max_x - hw) / 2;
+    WINDOW *win = newwin(hh, hw, hy, hx);
+    keypad(win, TRUE);
+    
+    int selection = 0;
+    while (1) {
+        box(win, 0, 0);
+        attron(A_BOLD);
+        mvwprintw(win, 1, (hw - 16) / 2, "Cursory Commands");
+        attroff(A_BOLD);
+        
+        for (int i=0; i<num_items; i++) {
+            if (i == selection) wattron(win, A_REVERSE);
+            mvwprintw(win, 3 + i, 4, "%-35s %15s", items[i].name, items[i].shortcut);
+            if (i == selection) wattroff(win, A_REVERSE);
+        }
+        
+        mvwprintw(win, hh - 2, (hw - 30) / 2, "Press Enter to execute, or ESC");
+        
+        wrefresh(win);
+        int c = wgetch(win);
+        if (c == KEY_MOUSE) continue;
+        
+        if (c == KEY_UP && selection > 0) selection--;
+        else if (c == KEY_DOWN && selection < num_items - 1) selection++;
+        else if (c == 27) { break; } // ESC
+        else if (c == '\n' || c == KEY_ENTER) {
+            delwin(win); clear(); calculate_layout(state);
+            switch (selection) {
+                case 0: editor_save(state); return;
+                case 1: 
+                {
+                    WINDOW *pwin = newwin(5, 60, (max_y-5)/2, (max_x-60)/2);
+                    box(pwin, 0, 0);
+                    mvwprintw(pwin, 1, 2, "Save As (File Path):");
+                    wmove(pwin, 2, 2);
+                    wrefresh(pwin);
+                    
+                    char path[1024] = {0};
+                    echo(); curs_set(1);
+                    wtimeout(pwin, -1);
+                    wgetnstr(pwin, path, 1023);
+                    noecho(); curs_set(0);
+                    delwin(pwin);
+                    clear(); calculate_layout(state);
+                    
+                    if (strlen(path) > 0) {
+                        snprintf(state->editor.filepath, sizeof(state->editor.filepath), "%s", path);
+                        editor_save(state);
+                    }
+                    return;
+                }
+                case 2: app_select_all(state); return;
+                case 3: app_copy(state); return;
+                case 4: app_cut(state); return;
+                case 5: app_paste(state); return;
+                case 6: 
+                    if (strcmp(state->editor.filepath, "[No File]") != 0) {
+                        editor_save(state);
+                        char cmd[1024]; snprintf(cmd, sizeof(cmd), "python3 %s\n", state->editor.filepath);
+                        if (write(state->terminal.master_fd, cmd, strlen(cmd)) < 0) {}
+                        state->panels[PANEL_TERMINAL].visible = true; calculate_layout(state);
+                        state->active_panel = PANEL_TERMINAL;
+                        snprintf(state->last_action, 128, "Run: %s", state->editor.filepath);
+                    }
+                    return;
+                case 7: state->panels[PANEL_FILE_TREE].visible = !state->panels[PANEL_FILE_TREE].visible; calculate_layout(state); return;
+                case 8: state->panels[PANEL_EDITOR].visible = !state->panels[PANEL_EDITOR].visible; calculate_layout(state); return;
+                case 9: state->panels[PANEL_AI].visible = !state->panels[PANEL_AI].visible; calculate_layout(state); return;
+                case 10: state->panels[PANEL_TERMINAL].visible = !state->panels[PANEL_TERMINAL].visible; calculate_layout(state); return;
+                case 11: state->running = false; return;
+                case 12: return;
+            }
+        }
+    }
+    delwin(win);
+    clear();
+    calculate_layout(state);
+}
+
 void init_app(AppState *state) {
     memset(state, 0, sizeof(AppState));
     for (int i=0; i<PANEL_COUNT; i++) { state->panels[i].visible = true; }
@@ -976,6 +1097,7 @@ void handle_input(AppState *state) {
         else if (ch == KEY_SR) base_ch = KEY_UP; else if (ch == KEY_SF) base_ch = KEY_DOWN;
     }
 
+    if (ch == KEY_F(1)) { show_help_menu(state); return; }
     if (ch == 1) { app_select_all(state); return; }
     if (ch == 3) { app_copy(state); return; }
     if (ch == 24) { app_cut(state); return; }
@@ -1018,14 +1140,6 @@ void handle_input(AppState *state) {
     }
 
     if (ch == KEY_MOUSE && getmouse(&ev) == OK) {
-        if (ev.y == 0) {
-            if (ev.x >= 11 && ev.x < 17) editor_save(state);
-            else if (ev.x >= 19 && ev.x < 24) app_cut(state);
-            else if (ev.x >= 26 && ev.x < 31) app_copy(state);
-            else if (ev.x >= 34 && ev.x < 40) app_paste(state);
-            else if (ev.x >= 43 && ev.x < 54) app_select_all(state);
-            return;
-        }
 
         if (ev.bstate & (BUTTON1_PRESSED | BUTTON1_CLICKED | BUTTON1_DOUBLE_CLICKED)) {
             struct timeval tv; gettimeofday(&tv, NULL);
@@ -1106,7 +1220,10 @@ void handle_input(AppState *state) {
     } else {
         if (state->active_panel == PANEL_FILE_TREE) {
             FileNode *fl[1000]; int c=0; flatten_tree(state->root, fl, &c, 1000);
-            if (ch == KEY_UP && state->tree_selection > 0) state->tree_selection--; else if (ch == KEY_DOWN && state->tree_selection < c-1) state->tree_selection++;
+            if (ch == KEY_UP && state->tree_selection > 0) state->tree_selection--; 
+            else if (ch == KEY_DOWN && state->tree_selection < c-1) state->tree_selection++;
+            else if (ch == KEY_PPAGE) { state->tree_selection -= state->tree_scroll.viewport_height; if (state->tree_selection < 0) state->tree_selection = 0; }
+            else if (ch == KEY_NPAGE) { state->tree_selection += state->tree_scroll.viewport_height; if (state->tree_selection >= c) state->tree_selection = c-1; }
             else if (ch == '\n' || ch == KEY_ENTER) {
                 FileNode *s = fl[state->tree_selection];
                 if (s->is_dir) { s->is_expanded = !s->is_expanded; if (s->is_expanded && s->child_count == 0) load_directory(s); }
@@ -1116,8 +1233,25 @@ void handle_input(AppState *state) {
             EditorBuffer *eb = &state->editor; Selection *sel = &eb->selection;
             int old_y = eb->cursor_y, old_x = eb->cursor_x;
 
-            if (base_ch == KEY_UP && eb->cursor_y > 0) eb->cursor_y--;
-            else if (base_ch == KEY_DOWN && eb->cursor_y < eb->line_count-1) eb->cursor_y++;
+            if (base_ch == KEY_UP && eb->cursor_y > 0) {
+                eb->cursor_y--;
+                int len = strlen(eb->lines[eb->cursor_y]);
+                if (eb->cursor_x > len) eb->cursor_x = len;
+            } else if (base_ch == KEY_DOWN && eb->cursor_y < eb->line_count-1) {
+                eb->cursor_y++;
+                int len = strlen(eb->lines[eb->cursor_y]);
+                if (eb->cursor_x > len) eb->cursor_x = len;
+            } else if (base_ch == KEY_PPAGE) {
+                eb->cursor_y -= eb->scroll.viewport_height;
+                if (eb->cursor_y < 0) eb->cursor_y = 0;
+                int len = strlen(eb->lines[eb->cursor_y]);
+                if (eb->cursor_x > len) eb->cursor_x = len;
+            } else if (base_ch == KEY_NPAGE) {
+                eb->cursor_y += eb->scroll.viewport_height;
+                if (eb->cursor_y >= eb->line_count) eb->cursor_y = eb->line_count - 1;
+                int len = strlen(eb->lines[eb->cursor_y]);
+                if (eb->cursor_x > len) eb->cursor_x = len;
+            }
             else if (base_ch == KEY_LEFT && eb->cursor_x > 0) eb->cursor_x--;
             else if (base_ch == KEY_RIGHT && eb->cursor_x < (int)strlen(eb->lines[eb->cursor_y])) eb->cursor_x++;
             else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) delete_char(state);
@@ -1149,6 +1283,19 @@ void handle_input(AppState *state) {
                     int nlen = strlen(cb->lines[cb->cursor_y]);
                     if (cb->cursor_x > nlen) cb->cursor_x = nlen;
                 }
+            } else if (base_ch == KEY_PPAGE) {
+                cb->cursor_y -= cb->scroll.viewport_height;
+                if (cb->cursor_y < 0) cb->cursor_y = 0;
+                int plen = strlen(cb->lines[cb->cursor_y]);
+                int last_vrow_start = (plen / vw) * vw;
+                cb->cursor_x = last_vrow_start + (cb->cursor_x % vw);
+                if (cb->cursor_x > plen) cb->cursor_x = plen;
+            } else if (base_ch == KEY_NPAGE) {
+                cb->cursor_y += cb->scroll.viewport_height;
+                if (cb->cursor_y >= cb->line_count) cb->cursor_y = cb->line_count - 1;
+                cb->cursor_x %= vw;
+                int nlen = strlen(cb->lines[cb->cursor_y]);
+                if (cb->cursor_x > nlen) cb->cursor_x = nlen;
             } else if (base_ch == KEY_LEFT && cb->cursor_x > 0) cb->cursor_x--;
             else if (base_ch == KEY_RIGHT && cb->cursor_x < (int)strlen(cb->lines[cb->cursor_y])) cb->cursor_x++;
             else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
@@ -1179,6 +1326,8 @@ void handle_input(AppState *state) {
         } else if (state->active_panel == PANEL_AI) {
             ScrollState *ss = &state->ai.scroll;
             if (ch == KEY_UP) ss->scroll_y--; else if (ch == KEY_DOWN) ss->scroll_y++;
+            else if (ch == KEY_PPAGE) ss->scroll_y -= ss->viewport_height;
+            else if (ch == KEY_NPAGE) ss->scroll_y += ss->viewport_height;
             clamp_scroll(ss);
         } else if (state->active_panel == PANEL_TERMINAL) handle_terminal_input(state, ch);
     }

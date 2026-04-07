@@ -72,6 +72,29 @@ char* escape_json_string(const char *in) {
     *p = '\0'; return out;
 }
 
+const char* find_json_block_end(const char *start) {
+    if (!start) return NULL;
+    char open = *start; 
+    char close = (open == '{') ? '}' : (open == '[' ? ']' : '\0');
+    if (!close) return NULL;
+    
+    int depth = 0; bool in_quote = false; char quote_char = '\0'; bool esc = false;
+    const char *p = start;
+    while (*p) {
+        if (!in_quote) {
+            if (*p == '\'' || *p == '\"') { in_quote = true; quote_char = *p; esc = false; }
+            else if (*p == open) depth++;
+            else if (*p == close) { depth--; if (depth == 0) return p; }
+        } else {
+            if (!esc && *p == '\\') esc = true;
+            else if (!esc && *p == quote_char) in_quote = false;
+            else esc = false;
+        }
+        p++;
+    }
+    return NULL;
+}
+
 char* parse_json_value(const char *json, const char *key) {
     if (!json || !key) return NULL;
     char key_match[256]; snprintf(key_match, sizeof(key_match), "\"%s\"", key);
@@ -81,43 +104,53 @@ char* parse_json_value(const char *json, const char *key) {
 
     const char *p = last + strlen(key_match);
     while (*p && isspace(*p)) p++;
-    if (*p != ':') return NULL;
-    p++;
+    if (*p == ':') p++;
+    else if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBC && (unsigned char)p[2] == 0x9A) p += 3;
+    else return NULL;
     while (*p && isspace(*p)) p++;
     const char *st = p;
-    while (*st && *st != '\"' && *st != '{' && *st != '[') st++;
+    while (*st && *st != '\"' && *st != '\'' && *st != '{' && *st != '[') st++;
     if (!*st) return NULL;
 
     if (*st == '{' || *st == '[') {
-        char open = *st, close = (open == '{' ? '}' : ']');
-        int depth = 1; const char *en = st + 1;
-        while (*en && depth > 0) {
-            if (*en == open) depth++;
-            else if (*en == close) depth--;
-            en++;
+        const char *en = find_json_block_end(st);
+        if (en) {
+            int len = en + 1 - st; char *val = malloc(len + 1); strncpy(val, st, len); val[len] = '\0'; return val;
         }
-        int len = en - st; char *val = malloc(len + 1); strncpy(val, st, len); val[len] = '\0'; return val;
+        return NULL;
     }
 
     // String value
+    char quote_char = *st;
     st++; const char *en = st;
     bool esc = false;
     while (*en) {
         if (!esc && *en == '\\') esc = true;
-        else if (!esc && *en == '\"') break;
+        else if (!esc && *en == quote_char) break;
         else esc = false;
         en++;
     }
     if (!*en) return NULL;
-    int len = en - st; char *val = malloc(len + 1);
+
+    bool has_real_newlines = false;
+    for (const char *tmp = st; tmp < en; tmp++) {
+        if (*tmp == '\n') { has_real_newlines = true; break; }
+    }
+
+    int len = en - st; char *val = malloc(len * 2 + 1); // alloc enough space for \n expansions
     char *d = val; const char *s = st;
     while (s < en) {
         if (*s == '\\') {
             s++;
-            if (*s == 'n') { *d++ = '\n'; s++; }
+            if (*s == 'n') {
+                if (has_real_newlines) { *d++ = '\\'; *d++ = 'n'; }
+                else { *d++ = '\n'; }
+                s++;
+            }
             else if (*s == 'r') { *d++ = '\r'; s++; }
             else if (*s == 't') { *d++ = '\t'; s++; }
             else if (*s == '\"') { *d++ = '\"'; s++; }
+            else if (*s == '\'') { *d++ = '\''; s++; }
             else if (*s == '\\') { *d++ = '\\'; s++; }
             else if (*s == 'u') {
                 s++; if (s+4 > en) break;
@@ -136,53 +169,122 @@ char* parse_json_value(const char *json, const char *key) {
 
 int parse_patch_ops(const char *json, PatchOp **ops) {
     if (!json) return 0;
-    const char *p = strcasestr(json, "\"patch\""); if (!p) return 0;
-    p = strchr(p, '['); if (!p) return 0;
-    const char *end_arr = strchr(p, ']'); if (!end_arr) return 0;
-
     int count = 0; PatchOp *list = NULL;
-    const char *curr = p;
-    while ((curr = strchr(curr, '{')) && curr < end_arr) {
-        const char *obj_end = strchr(curr, '}'); if (!obj_end) break;
-        int len = obj_end - curr + 1; char *obj = malloc(len + 1); strncpy(obj, curr, len); obj[len] = '\0';
+    
+    const char *p = json;
+    while ((p = strcasestr(p, "\"patch\""))) {
+        const char *arr_start = strchr(p, '['); 
+        if (!arr_start) { p += 7; continue; }
         
-        char *type = parse_json_value(obj, "type");
-        char *content = parse_json_value(obj, "content");
-        int line = 0;
-        char *lpos = strcasestr(obj, "\"line\"");
-        if (lpos) {
-            char *colon = strchr(lpos, ':');
-            if (colon) {
-                while (*colon && (*colon == ':' || *colon == ' ' || *colon == '\"')) colon++;
-                line = atoi(colon);
-            }
-        }
+        const char *end_arr = find_json_block_end(arr_start); 
+        if (!end_arr) { p += 7; continue; }
 
-        if (type) {
-            list = realloc(list, sizeof(PatchOp) * (count + 1));
-            strncpy(list[count].type, type, 15); list[count].type[15] = '\0';
-            list[count].line = line;
-            list[count].content = content ? strdup(content) : NULL;
-            count++;
+        const char *curr = arr_start + 1;
+        while (curr < end_arr) {
+            curr = strchr(curr, '{');
+            if (!curr || curr >= end_arr) break;
+            const char *obj_end = find_json_block_end(curr); 
+            if (!obj_end || obj_end > end_arr) break;
+            
+            int len = obj_end - curr + 1; char *obj = malloc(len + 1); strncpy(obj, curr, len); obj[len] = '\0';
+            
+            char *type = parse_json_value(obj, "type");
+            char *content = parse_json_value(obj, "content");
+            if (!content) content = parse_json_value(obj, "code");
+            if (!content) content = parse_json_value(obj, "text");
+            if (!content) content = parse_json_value(obj, "");
+
+            int line = 0;
+            char *lpos = strcasestr(obj, "\"line\"");
+            if (lpos) {
+                lpos += 6;
+                while (*lpos && !isdigit(*lpos)) lpos++;
+                if (isdigit(*lpos)) line = atoi(lpos);
+            }
+
+            if (type) {
+                list = realloc(list, sizeof(PatchOp) * (count + 1));
+                strncpy(list[count].type, type, 15); list[count].type[15] = '\0';
+                list[count].line = line;
+                if (content) {
+                    int clen = strlen(content);
+                    while (clen > 0 && (content[clen-1] == '\n' || content[clen-1] == '\r')) {
+                        content[clen-1] = '\0';
+                        clen--;
+                    }
+                    list[count].content = strdup(content);
+                } else {
+                    list[count].content = NULL;
+                }
+                count++;
+            }
+            free(obj); free(type); free(content);
+            curr = obj_end + 1;
         }
-        free(obj); free(type); free(content);
-        curr = obj_end + 1;
+        p = end_arr;
     }
     *ops = list; return count;
 }
 
 char** apply_patch_to_buffer(char **lines, int *count, PatchOp *ops, int op_count) {
+    if (op_count > 1) {
+        for (int i=1; i<op_count; i++) {
+            PatchOp key = ops[i]; int j = i - 1;
+            while (j >= 0 && ops[j].line <= key.line) { ops[j+1] = ops[j]; j--; }
+            ops[j+1] = key;
+        }
+    }
+    int original_count = *count;
     int cur_count = *count; char **cur_lines = malloc(sizeof(char*) * cur_count);
     for (int i=0; i<cur_count; i++) cur_lines[i] = strdup(lines[i]);
     for (int i=0; i<op_count; i++) {
-        PatchOp *op = &ops[i]; int idx = op->line;
+        PatchOp *op = &ops[i]; int idx = op->line - 1;
+        if (idx < 0) idx = 0;
+        
+        if (strcmp(op->type, "insert") == 0 && idx >= original_count) {
+            strcpy(op->type, "replace");
+        }
+
+        char *lines_arr[1000]; int num_lines = 0;
+        char *p = op->content ? op->content : "";
+
+        while (*p && num_lines < 1000) {
+            const char *nl = strchr(p, '\n');
+            if (!nl) { lines_arr[num_lines++] = strdup(p); break; }
+            int slen = nl - p; char *sl = malloc(slen + 1);
+            strncpy(sl, p, slen); sl[slen] = '\0';
+            lines_arr[num_lines++] = sl; p = nl + 1;
+        }
+        if (num_lines == 0) lines_arr[num_lines++] = strdup("");
+
         if (strcmp(op->type, "replace") == 0) {
-            if (idx >= 0 && idx < cur_count) { free(cur_lines[idx]); cur_lines[idx] = strdup(op->content ? op->content : ""); }
+            if (idx >= 0) {
+                while (idx >= cur_count) {
+                    cur_lines = realloc(cur_lines, sizeof(char*) * (cur_count + 1));
+                    cur_lines[cur_count++] = strdup("");
+                }
+                free(cur_lines[idx]); cur_lines[idx] = lines_arr[0];
+                for (int m = 1; m < num_lines; m++) {
+                    cur_lines = realloc(cur_lines, sizeof(char*) * (cur_count + 1));
+                    memmove(cur_lines + idx + m + 1, cur_lines + idx + m, sizeof(char*) * (cur_count - (idx + m)));
+                    cur_lines[idx + m] = lines_arr[m]; cur_count++;
+                }
+            } else {
+                for (int m=0; m<num_lines; m++) free(lines_arr[m]);
+            }
         } else if (strcmp(op->type, "insert") == 0) {
-            if (idx >= 0 && idx <= cur_count) {
-                cur_lines = realloc(cur_lines, sizeof(char*) * (cur_count + 1));
-                memmove(cur_lines + idx + 1, cur_lines + idx, sizeof(char*) * (cur_count - idx));
-                cur_lines[idx] = strdup(op->content ? op->content : ""); cur_count++;
+            if (idx >= 0) {
+                while (idx > cur_count) {
+                    cur_lines = realloc(cur_lines, sizeof(char*) * (cur_count + 1));
+                    cur_lines[cur_count++] = strdup("");
+                }
+                for (int m = 0; m < num_lines; m++) {
+                    cur_lines = realloc(cur_lines, sizeof(char*) * (cur_count + 1));
+                    memmove(cur_lines + idx + m + 1, cur_lines + idx + m, sizeof(char*) * (cur_count - (idx + m)));
+                    cur_lines[idx + m] = lines_arr[m]; cur_count++;
+                }
+            } else {
+                for (int m=0; m<num_lines; m++) free(lines_arr[m]);
             }
         } else if (strcmp(op->type, "delete") == 0) {
             if (idx >= 0 && idx < cur_count) {

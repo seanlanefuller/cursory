@@ -71,8 +71,6 @@ static void process_ai_line(AppState *s, char *line) {
 
 size_t ai_write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t rs = size * nmemb; AppState *s = (AppState*)userp;
-    FILE *lf = fopen("/tmp/cursory_ai_raw.log", "a");
-    if (lf) { fwrite(contents, 1, rs, lf); fclose(lf); }
 
     pthread_mutex_lock(&s->ai.mutex);
     s->ai.stream_buffer = realloc(s->ai.stream_buffer, s->ai.stream_buffer_len + rs + 1);
@@ -190,24 +188,61 @@ void* ai_thread_func(void *arg) {
         }
     }
 
+    char *file_ctx = strdup("");
+    if (strcmp(s->editor.filepath, "[No File]") != 0) {
+        int f_len = 0;
+        char *tmp_f;
+        if (asprintf(&tmp_f, "### ACTIVE FILE (%s):\n", s->editor.filepath) != -1) {
+            free(file_ctx);
+            file_ctx = tmp_f;
+            f_len = strlen(tmp_f);
+        }
+        for (int i=0; i<s->editor.line_count; i++) {
+            char *line;
+            int l = asprintf(&line, "%d: %s\n", i + 1, s->editor.lines[i]);
+            if (l != -1) {
+                char *tmp = realloc(file_ctx, f_len + l + 1);
+                if (tmp) {
+                    file_ctx = tmp;
+                    strcpy(file_ctx + f_len, line);
+                    f_len += l;
+                }
+                free(line);
+            }
+        }
+    }
+
+    char *tools_ctx = strdup("### TOOLS:\n"
+                             "You can edit the active file using a JSON patch format.\n"
+                             "Format to edit: {\"patch\": [{\"type\": \"replace\"|\"insert\"|\"delete\", \"line\": <line_number>, \"content\": \"<new_line_content>\"}]}\n"
+                             "CRITICAL: Do NOT invent or hallucinate tools like `append_file`. If you need to append data, you MUST use the `patch` tool with an `insert` block.\n"
+                             "Other tools available (output exactly the following JSON to use):\n"
+                             "{\"tool\": \"list_dir\", \"path\": \"<path>\"}\n"
+                             "{\"tool\": \"read_file\", \"path\": \"<path>\"}\n"
+                             "{\"tool\": \"grep_file\", \"path\": \"<path>\", \"pattern\": \"<pattern>\"}\n"
+                             "CRITICAL: When talking back to the user, you MUST respond in normal conversational plaintext! Do NOT wrap your conversational replies dynamically into explicit JSON structures!\n");
+
     char *full_p;
-    if (asprintf(&full_p, "You are a helpful AI coding assistant running an an IDE in Linux.\n"
-                     "### CONVERSATION HISTORY:\n%s\n### NEW USER MESSAGE: %s\n### YOUR RESPONSE:", 
-                     hist, td->prompt) == -1) {
-        free(hist);
+    if (asprintf(&full_p, "You are a helpful AI coding assistant running in an IDE in Linux.\n"
+                          "%s\n%s\n"
+                          "### CONVERSATION HISTORY:\n%s\n"
+                          "### NEW USER MESSAGE: %s\n"
+                          "### YOUR RESPONSE:", 
+                          tools_ctx, file_ctx, hist, td->prompt) == -1) {
+        free(hist); free(tools_ctx); free(file_ctx);
         s->ai.is_waiting = 0;
         pthread_mutex_unlock(&s->ai.mutex);
         free(td->prompt); free(td);
         return NULL;
     }
-    free(hist);
+    free(hist); free(tools_ctx); free(file_ctx);
 
     int last = s->ai.message_count - 1;
     if (last >= 0) { free(s->ai.messages[last].content); s->ai.messages[last].content = strdup(""); }
     snprintf(s->last_action, 128, "AI Thinking...");
     pthread_mutex_unlock(&s->ai.mutex);
 
-    char *model = strdup("deepseek-coder:latest");
+    char *model = strdup("qwen2.5-coder:7b");
     FILE *cf = fopen("config.txt", "r");
     if (cf) {
         char buf[128];
@@ -223,7 +258,7 @@ void* ai_thread_func(void *arg) {
     if (curl) {
         char *esc = escape_json_string(full_p); free(full_p);
         char *pay; 
-        if (asprintf(&pay, "{\"model\": \"%s\", \"messages\": [{\"role\": \"user\", \"content\": \"%s\"}], \"stream\": true, \"options\": {\"temperature\": 0.7}}", model, esc) != -1) {
+        if (asprintf(&pay, "{\"model\": \"%s\", \"messages\": [{\"role\": \"user\", \"content\": \"%s\"}], \"stream\": true, \"options\": {\"temperature\": 0.3}}", model, esc) != -1) {
             struct curl_slist *h = NULL; h = curl_slist_append(h, "Content-Type: application/json");
             curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:11434/v1/chat/completions");
             curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h); curl_easy_setopt(curl, CURLOPT_POSTFIELDS, pay);
@@ -239,6 +274,73 @@ void* ai_thread_func(void *arg) {
                 int midx = s->ai.message_count - 1;
                 if (midx >= 0) {
                     if (s->ai.messages[midx].reasoning) { free(s->ai.messages[midx].reasoning); s->ai.messages[midx].reasoning = NULL; }
+                    
+                    if (s->ai.messages[midx].content && strcmp(s->editor.filepath, "[No File]") != 0) {
+                        PatchOp *ops = NULL;
+                        int num_ops = parse_patch_ops(s->ai.messages[midx].content, &ops);
+                        if (num_ops > 0) {
+                            int line_count = s->editor.line_count;
+                            char **res_lines = apply_patch_to_buffer(s->editor.lines, &line_count, ops, num_ops);
+                            if (res_lines) {
+                                int tlen = 0;
+                                for (int i=0; i<line_count; i++) tlen += strlen(res_lines[i]) + 1;
+                                char *joined = malloc(tlen + 1); joined[0] = '\0';
+                                for (int i=0; i<line_count; i++) {
+                                    strcat(joined, res_lines[i]);
+                                    if (i < line_count - 1) strcat(joined, "\n");
+                                }
+                                s->ai.pending_content = joined;
+                                strncpy(s->ai.pending_path, s->editor.filepath, sizeof(s->ai.pending_path)-1);
+                                
+                                char *old_joined = malloc(1); old_joined[0] = '\0'; int old_len = 0;
+                                for(int i=0; i<s->editor.line_count; i++) {
+                                    int l = strlen(s->editor.lines[i]);
+                                    old_joined = realloc(old_joined, old_len + l + 2);
+                                    strcpy(old_joined + old_len, s->editor.lines[i]);
+                                    old_len += l;
+                                    if (i < s->editor.line_count - 1) { old_joined[old_len++] = '\n'; old_joined[old_len] = '\0'; }
+                                }
+                                s->ai.diff_text = generate_line_diff(old_joined, joined);
+                                free(old_joined);
+                                
+                                for(int i=0; i<line_count; i++) free(res_lines[i]);
+                                free(res_lines);
+                                s->ai.is_waiting_approval = true;
+                            }
+                            for (int i=0; i<num_ops; i++) if (ops[i].content) free(ops[i].content);
+                            free(ops);
+                        }
+                    }
+
+                    if (!s->ai.is_waiting_approval && s->ai.messages[midx].content) {
+                        char *tool = parse_json_value(s->ai.messages[midx].content, "tool");
+                        if (tool) {
+                            char *path = parse_json_value(s->ai.messages[midx].content, "path");
+                            char *pattern = parse_json_value(s->ai.messages[midx].content, "pattern");
+                            char *result = NULL;
+                            
+                            if (strcmp(tool, "list_dir") == 0 && path) result = tool_list_dir(path);
+                            else if (strcmp(tool, "read_file") == 0 && path) result = tool_read_file(path);
+                            else if (strcmp(tool, "grep_file") == 0 && path && pattern) result = tool_grep_file(path, pattern);
+                            
+                            if (result) {
+                                s->ai.messages = realloc(s->ai.messages, sizeof(AIMessage)*(s->ai.message_count+2));
+                                s->ai.messages[s->ai.message_count++] = (AIMessage){strdup("system"), result, NULL};
+                                s->ai.messages[s->ai.message_count++] = (AIMessage){strdup("assistant"), strdup(""), NULL};
+                                
+                                AIThreadData *td_new = malloc(sizeof(AIThreadData)); td_new->state = s; 
+                                td_new->prompt = strdup("System: Process tool result.");
+                                pthread_t tid; pthread_create(&tid, NULL, ai_thread_func, td_new); pthread_detach(tid);
+                                s->ai.is_waiting = 1;
+                            }
+                            free(tool); if (path) free(path); if (pattern) free(pattern);
+                            if (result) {
+                                pthread_mutex_unlock(&s->ai.mutex);
+                                curl_slist_free_all(h); free(pay); curl_easy_cleanup(curl); free(model);
+                                return NULL;
+                            }
+                        }
+                    }
                 }
                 pthread_mutex_unlock(&s->ai.mutex);
             } else {

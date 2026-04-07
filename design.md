@@ -1,37 +1,30 @@
 # Cursory: System Design & AI Grounding
 
 ## Architecture
-Cursory is built as a single-threaded ncurses event loop with detached POSIX threads for AI communication.
+Cursory leverages a unified single-threaded `ncurses` event loop for the terminal UI, isolating heavy LLM stream decoding safely into explicitly detached POSIX threads.
 
 ### Core Components
-1. **AppState**: Centralized state management using `pthread_mutex` for thread safety.
-2. **Ncurses TUI**: A panel-based rendering system with manual layout calculation.
-3. **AI Dispatcher**: 
-   - Uses `libcurl` to stream responses from Ollama.
-   - Implements a **Binary-Choice Grounding** strategy to prevent model hallucinations.
-   - **Greedy Last-Occurrence Parser**: A robust JSON extractor that handles AI repetitions by favoring the last occurrence of a key.
+1. **Thread-Safe AppState**: Globally accessible state architecture securely mapping string mutations through `pthread_mutex`, blocking dynamic buffer crashes from asynchronous AI responses.
+2. **Interactive Command Palette**: Replaces strictly static keyboard bindings with an interactively parsed `ncurses` pop-up struct array (invoked via `F1`). It acts functionally identical to VS Code's Command Palette, natively processing global overrides (Panel Toggles, Save As, and Select All bindings).
+3. **Internal Parsing Tool Loop**:
+   - Seamless internal hooks evaluating exact payloads directly inside the JSON interpreter stream block to explicitly trigger `tool_read_file`, `tool_list_dir`, and native grep search callbacks, automatically routing the systemic payload query back into the AI generation loop recursively.
 
 ## AI Stability Breakthroughs
-To make Llama 3 8B reliable for tool usage in a terminal environment, Cursory implements:
+To make code-optimized open-source local models (like `Qwen2.5-Coder`) reliably execute complex multi-block file overwrites, Cursory enacts aggressive LLM structural constraints:
 
-### 1. Completion-State Persona
-Instead of a chat-like prompt, Cursory uses a robotic "Completion-State" structure:
-```text
-### PERSONALITY: ...
-### TOOLS: ...
-### TASK: Choose ONE (Tool or Final Reply)
-### CONTEXT: ...
-### RESPONSE: 
-```
-This forces the model into a strict instruction-following mode.
+### 1. Robust JSON Structure Handlers
+The internal payload scanner `parse_patch_ops` processes LLM output safely using custom string scanners structurally resistant against hallucinated non-string formats:
+- **Recursive Stream Reading**: Cursory does NOT halt scanning after encountering the first chunk; it intelligently accumulates subsequent `"patch"` blocks sequentially down the buffer, fully satisfying multi-patch schema replies.
+- **Payload Banning**: Bypassing recursive serialization by strictly ordering the AI to output plain text conversing loops, aggressively restricting JSON execution strictly to tool triggers.
 
-### 2. Multi-Turn Feedback Loop
-If the dispatcher detects an unknown tool call or a malformed JSON action, it automatically injects an error message into the next turn's history. The model perceives this as an "execution failure" and re-plans using the approved toolset.
+### 2. Multi-Turn Edit Grounding & Interpolation
+- **`1`-Based Mapping Conversions**: Since large local models naturally hallucinate their targets natively according to real-world `1`-based document indices mapping, Cursory absorbs the `1`-based values dynamically internally, inverting `(idx - 1)` mapping dynamically right before buffer insertion natively executing onto the C memory array structure safely enforcing parity.
+- **Bounds Clamping & Padding Rewrites**: OOB (Out-of-Bounds) drops naturally floor natively down to `0`. If multiple consecutive `insert` string directives hallucinate dynamically above `line_count` (which previously produced whitespace artifacts using intermediate space shifts), the parser identifies identical bounds and translates them natively into `replace` overwrites mathematically locking the synthetic padding into the stream.
 
-### 3. Context Pruning
-To prevent the 8B-parameter model from getting "lost" or becoming recursive, the conversation history is pruned to the last 4 messages, maintaining a tight focus on the immediate task.
+## Status & Roadmap
+- [x] Unified Panel Scrolling & Interactive Command Palette Setup
+- [x] Hardened Local Ollama API Output Parsers
+- [x] Systemic `1`-based diff interpolation and OOB mitigation
+- [ ] Regex-based Syntax Highlighting Engine
+- [ ] Cross-Panel Global IDE Configuration (`.cursoryrc`)
 
-## Future Roadmap (Phase 7+)
-- Full-featured Editor (Insertion/Deletion)
-- Regex-based Syntax Highlighting
-- Global `.cursoryrc` configuration support

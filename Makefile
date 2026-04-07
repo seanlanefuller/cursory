@@ -1,19 +1,31 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
 LIBS = -lncurses -lutil -lcurl -lpthread
-TARGET = cursory
-SRC = main.c
 
-all: $(TARGET)
+SRCS = main.c ui.c ai.c utils.c
+OBJS = $(SRCS:.c=.o)
 
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) $(SRC) $(LIBS) -o $(TARGET)
+all: cursory
+
+cursory: $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LIBS)
+
+%.o: %.c cursory.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(TARGET)
-	rm -f cursory.log
+	rm -f cursory $(OBJS) cursory.log
 
-run: all
-	./$(TARGET)
+test: tests/test_json tests/integration tests/test_patch
+	./tests/test_json
+	./tests/integration
+	./tests/test_patch
 
-.PHONY: all clean run
+tests/test_patch: tests/test_patch.c utils.c
+	$(CC) $(CFLAGS) -o $@ tests/test_patch.c utils.c $(LIBS)
+
+tests/test_json: tests/test_json.c utils.c
+	$(CC) $(CFLAGS) -o $@ tests/test_json.c utils.c $(LIBS)
+
+tests/integration: tests/integration.c utils.c
+	$(CC) $(CFLAGS) -o $@ tests/integration.c utils.c $(LIBS)

@@ -1,15 +1,15 @@
 # Cursory
 
-**Cursory** is a lightweight, ncurses-based IDE designed for stable, project-aware AI pair programming using Llama 3 (via Ollama). It provides a terminal-native workspace with real-time AI tool execution, allowing the model to browse, read, and search your codebase directly.
+**Cursory** is a lightweight, natively compiled `ncurses`-based IDE designed for stable, project-aware AI pair programming powered by **Qwen2.5-Coder** (via Ollama). It provides a terminal-native workspace integrated with real-time AI tool execution, allowing the LLM backend to iteratively explore, parse, and strictly patch your codebase structurally via a robust local framework environment.
 
 ## Features
-- **Project-Aware AI**: Multi-turn conversation loop where the AI uses tools (`list_dir`, `read_file`, `grep_file`) to explore your project.
-- **Ncurses Interface**: Blazing fast, terminal-native TUI with split panels for File Tree, Editor, AI Chat, and Terminal.
-- **Llama 3 Optimized**: Custom prompt-grounding strategies to force reliable JSON-only tool usage from medium-sized local models.
-- **Zero Configuration**: Single C file implementation with minimal dependencies.
+- **Project-Aware Context**: Multi-turn conversation logic empowering the AI to dynamically execute tools (`list_dir`, `read_file`, `grep_file`) to understand the active code structure before generating context.
+- **Robust Multi-Patch Editing**: Structural JSON patch loop utilizing strict `[{"type": "insert" | "replace"}]` formatting schemas. Seamlessly maps logical `1`-based LLM coordinates onto raw `C` memory `0`-based indices, while mitigating hallucinated drops securely using bounds-clamping and synthetic multi-string array padding.
+- **Command Palette Execution (F1)**: VS Code-esque keystroke UI hub mapped functionally into an `ncurses` array overlaid mechanically upon the active viewport, exposing global bindings (Quick Save As, File Tree toggle, and Python script deployment) uniformly.
+- **Unified Editor Viewport**: Cross-panel synchronized input scrolling covering File Trees, Editor Buffers, LLM streaming Chat interfaces, and dynamic sub-process Terminal shells smoothly.
 
 ## Installation
-Ensure you have `ncurses`, `libcurl`, and `libutil` installed.
+Ensure you have `ncurses`, `libcurl`, `pthreads`, and `libutil` installed.
 ```bash
 sudo apt-get install libncurses5-dev libcurl4-openssl-dev
 ```
@@ -19,15 +19,14 @@ make
 ./cursory
 ```
 
-## AI Setup
-Cursory expects a local [Ollama](https://ollama.com/) instance running with the `llama3` model:
-```bash
-ollama run llama3
-```
-AI interaction is logged to `cursory.log` for transparency.
+## AI Setup & Diagnostics
+Cursory assumes a local [Ollama](https://ollama.com/) interface running at `http://localhost:11434` targeting standard models like `qwen2.5-coder:7b`.
+- **System Constraints**: The AI is securely prevented from hallucinating redundant JSON elements (like `{"append_file"}`) via rigorous internal prompt schema mapping rules.
+- **Diagnostic Logging**: Track crash traces internally via `/tmp/cursory.log`.
+- **Persistent Archival**: Automated conversational arrays dynamically stored at `/tmp/cursory_chat.log`.
 
 ## License
 MIT License. Feel free to use, modify, and distribute.
 
 ---
-*Built for the community by Sean.*
+*Built natively for the Linux terminal ecosystem.*
