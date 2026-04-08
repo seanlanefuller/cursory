@@ -101,25 +101,34 @@ void apply_pending_edit(AppState *state, bool approved) {
         state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
         goto cleanup;
     }
-    if (!is_safe_path(state->ai.pending_path)) {
-        state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage)*(state->ai.message_count+2));
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Error: Path forbidden.")};
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
-        goto cleanup;
+    if (state->editor.lines) {
+        for (int i=0; i<state->editor.line_count; i++) free(state->editor.lines[i]);
+        free(state->editor.lines);
     }
-    FILE *f = fopen(state->ai.pending_path, "w");
-    if (!f) {
-        state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage)*(state->ai.message_count+2));
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Error: Cannot write.")};
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
-    } else {
-        fwrite(state->ai.pending_content, 1, strlen(state->ai.pending_content), f); fclose(f);
-        state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage)*(state->ai.message_count+2));
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Applied successfully.")};
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
-        if (strcmp(state->editor.filepath, state->ai.pending_path) == 0) load_file(state, state->ai.pending_path);
-        free_file_tree(state->root); state->root = create_file_node(".", ".", true, 0); state->root->is_expanded = true; load_directory(state->root);
+    state->editor.lines = NULL;
+    state->editor.line_count = 0;
+
+    if (state->ai.pending_content && strlen(state->ai.pending_content) > 0) {
+        char *start = state->ai.pending_content;
+        char *newline;
+        while ((newline = strchr(start, '\n'))) {
+            *newline = '\0';
+            state->editor.lines = realloc(state->editor.lines, sizeof(char*)*(state->editor.line_count+1));
+            state->editor.lines[state->editor.line_count++] = strdup(start);
+            *newline = '\n';
+            start = newline + 1;
+        }
+        state->editor.lines = realloc(state->editor.lines, sizeof(char*)*(state->editor.line_count+1));
+        state->editor.lines[state->editor.line_count++] = strdup(start);
     }
+
+    if (strlen(state->ai.pending_path) > 0) {
+        strncpy(state->editor.filepath, state->ai.pending_path, sizeof(state->editor.filepath)-1);
+    }
+
+    state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage)*(state->ai.message_count+2));
+    state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Applied successfully.")};
+    state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
 cleanup:
     state->ai.is_waiting_approval = false;
     if (state->ai.pending_content) { free(state->ai.pending_content); state->ai.pending_content = NULL; }
@@ -213,13 +222,13 @@ void* ai_thread_func(void *arg) {
     }
 
     char *tools_ctx = strdup("### TOOLS:\n"
-                             "You can edit the active file using a JSON patch format.\n"
-                             "Format to edit: {\"patch\": [{\"type\": \"replace\"|\"insert\"|\"delete\", \"line\": <line_number>, \"content\": \"<new_line_content>\"}]}\n"
-                             "CRITICAL: Do NOT invent or hallucinate tools like `append_file`. If you need to append data, you MUST use the `patch` tool with an `insert` block.\n"
-                             "Other tools available (output exactly the following JSON to use):\n"
-                             "{\"tool\": \"list_dir\", \"path\": \"<path>\"}\n"
-                             "{\"tool\": \"read_file\", \"path\": \"<path>\"}\n"
-                             "{\"tool\": \"grep_file\", \"path\": \"<path>\", \"pattern\": \"<pattern>\"}\n"
+                             "You can edit the buffer using the following tools (output JSON to use):\n"
+                             "1. Patch existing content: {\"patch\": [{\"type\": \"replace\"|\"insert\"|\"delete\", \"line\": <line_number>, \"content\": \"<new_line_content>\"}]}\n"
+                             "2. Overwrite or Create new content in buffer: {\"tool\": \"write_file\", \"path\": \"<filename>\", \"content\": \"<entire_file_content>\"}\n"
+                             "Note: You can use \"\" instead of \"content\" for the code in write_file, and \"mode\" instead of \"tool\".\n"
+                             "3. Other tools: list_dir, read_file, grep_file (Standard JSON with \"tool\": \"name\", \"path\": \"...\")\n"
+                             "CRITICAL: Do NOT invent tools like `append_file`. Use `patch` with `insert` instead.\n"
+                             "CRITICAL: All changes are applied to the ACTIVE EDITOR BUFFER ONLY. They do NOT touch the filesystem.\n"
                              "CRITICAL: When talking back to the user, you MUST respond in normal conversational plaintext! Do NOT wrap your conversational replies dynamically into explicit JSON structures!\n");
 
     char *full_p;
@@ -272,10 +281,12 @@ void* ai_thread_func(void *arg) {
                 pthread_mutex_lock(&s->ai.mutex);
                 if (s->ai.stream_buffer_len > 0) { process_ai_line(s, s->ai.stream_buffer); s->ai.stream_buffer_len = 0; }
                 int midx = s->ai.message_count - 1;
-                if (midx >= 0) {
+                if (midx >= 0 && s->ai.messages[midx].content) {
+                    log_debug("Full AI Response: %s", s->ai.messages[midx].content);
+                    
                     if (s->ai.messages[midx].reasoning) { free(s->ai.messages[midx].reasoning); s->ai.messages[midx].reasoning = NULL; }
                     
-                    if (s->ai.messages[midx].content && strcmp(s->editor.filepath, "[No File]") != 0) {
+                    if (1) {
                         PatchOp *ops = NULL;
                         int num_ops = parse_patch_ops(s->ai.messages[midx].content, &ops);
                         if (num_ops > 0) {
@@ -314,6 +325,7 @@ void* ai_thread_func(void *arg) {
 
                     if (!s->ai.is_waiting_approval && s->ai.messages[midx].content) {
                         char *tool = parse_json_value(s->ai.messages[midx].content, "tool");
+                        if (!tool) tool = parse_json_value(s->ai.messages[midx].content, "mode");
                         if (tool) {
                             char *path = parse_json_value(s->ai.messages[midx].content, "path");
                             char *pattern = parse_json_value(s->ai.messages[midx].content, "pattern");
@@ -322,6 +334,29 @@ void* ai_thread_func(void *arg) {
                             if (strcmp(tool, "list_dir") == 0 && path) result = tool_list_dir(path);
                             else if (strcmp(tool, "read_file") == 0 && path) result = tool_read_file(path);
                             else if (strcmp(tool, "grep_file") == 0 && path && pattern) result = tool_grep_file(path, pattern);
+                            else if (strcmp(tool, "write_file") == 0) {
+                                char *content = parse_json_value(s->ai.messages[midx].content, "content");
+                                if (!content) content = parse_json_value(s->ai.messages[midx].content, "code");
+                                if (!content) content = parse_json_value(s->ai.messages[midx].content, "");
+                                
+                                if (content) {
+                                    s->ai.pending_content = content;
+                                    if (path) strncpy(s->ai.pending_path, path, sizeof(s->ai.pending_path)-1);
+                                    else strcpy(s->ai.pending_path, s->editor.filepath);
+                                    
+                                    char *old_joined = malloc(1); old_joined[0] = '\0'; int old_len = 0;
+                                    for(int i=0; i<s->editor.line_count; i++) {
+                                        int l = strlen(s->editor.lines[i]);
+                                        old_joined = realloc(old_joined, old_len + l + 2);
+                                        strcpy(old_joined + old_len, s->editor.lines[i]);
+                                        old_len += l;
+                                        if (i < s->editor.line_count - 1) { old_joined[old_len++] = '\n'; old_joined[old_len] = '\0'; }
+                                    }
+                                    s->ai.diff_text = generate_line_diff(old_joined, content);
+                                    free(old_joined);
+                                    s->ai.is_waiting_approval = true;
+                                }
+                            }
                             
                             if (result) {
                                 s->ai.messages = realloc(s->ai.messages, sizeof(AIMessage)*(s->ai.message_count+2));

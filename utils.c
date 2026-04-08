@@ -172,56 +172,64 @@ int parse_patch_ops(const char *json, PatchOp **ops) {
     int count = 0; PatchOp *list = NULL;
     
     const char *p = json;
-    while ((p = strcasestr(p, "\"patch\""))) {
-        const char *arr_start = strchr(p, '['); 
-        if (!arr_start) { p += 7; continue; }
-        
+    const char *patch_start = strcasestr(p, "\"patch\"");
+    const char *arr_start = NULL;
+
+    if (patch_start) {
+        arr_start = strchr(patch_start, '[');
+    } else {
+        // Fallback: ONLY if the string starts with '[' (ignoring whitespace)
+        const char *tmp = json;
+        while (*tmp == ' ' || *tmp == '\n' || *tmp == '\r' || *tmp == '\t') tmp++;
+        if (*tmp == '[') arr_start = tmp;
+    }
+
+    if (arr_start) {
         const char *end_arr = find_json_block_end(arr_start); 
-        if (!end_arr) { p += 7; continue; }
+        if (end_arr) {
+            const char *curr = arr_start + 1;
+            while (curr < end_arr) {
+                curr = strchr(curr, '{');
+                if (!curr || curr >= end_arr) break;
+                const char *obj_end = find_json_block_end(curr); 
+                if (!obj_end || obj_end > end_arr) break;
+                
+                int len = obj_end - curr + 1; char *obj = malloc(len + 1); strncpy(obj, curr, len); obj[len] = '\0';
+                
+                char *type = parse_json_value(obj, "type");
+                char *content = parse_json_value(obj, "content");
+                if (!content) content = parse_json_value(obj, "code");
+                if (!content) content = parse_json_value(obj, "text");
+                if (!content) content = parse_json_value(obj, "");
 
-        const char *curr = arr_start + 1;
-        while (curr < end_arr) {
-            curr = strchr(curr, '{');
-            if (!curr || curr >= end_arr) break;
-            const char *obj_end = find_json_block_end(curr); 
-            if (!obj_end || obj_end > end_arr) break;
-            
-            int len = obj_end - curr + 1; char *obj = malloc(len + 1); strncpy(obj, curr, len); obj[len] = '\0';
-            
-            char *type = parse_json_value(obj, "type");
-            char *content = parse_json_value(obj, "content");
-            if (!content) content = parse_json_value(obj, "code");
-            if (!content) content = parse_json_value(obj, "text");
-            if (!content) content = parse_json_value(obj, "");
-
-            int line = 0;
-            char *lpos = strcasestr(obj, "\"line\"");
-            if (lpos) {
-                lpos += 6;
-                while (*lpos && !isdigit(*lpos)) lpos++;
-                if (isdigit(*lpos)) line = atoi(lpos);
-            }
-
-            if (type) {
-                list = realloc(list, sizeof(PatchOp) * (count + 1));
-                strncpy(list[count].type, type, 15); list[count].type[15] = '\0';
-                list[count].line = line;
-                if (content) {
-                    int clen = strlen(content);
-                    while (clen > 0 && (content[clen-1] == '\n' || content[clen-1] == '\r')) {
-                        content[clen-1] = '\0';
-                        clen--;
-                    }
-                    list[count].content = strdup(content);
-                } else {
-                    list[count].content = NULL;
+                int line = 0;
+                char *lpos = strcasestr(obj, "\"line\"");
+                if (lpos) {
+                    lpos += 6;
+                    while (*lpos && !isdigit(*lpos)) lpos++;
+                    if (isdigit(*lpos)) line = atoi(lpos);
                 }
-                count++;
+
+                if (type) {
+                    list = realloc(list, sizeof(PatchOp) * (count + 1));
+                    strncpy(list[count].type, type, 15); list[count].type[15] = '\0';
+                    list[count].line = line;
+                    if (content) {
+                        int clen = strlen(content);
+                        while (clen > 0 && (content[clen-1] == '\n' || content[clen-1] == '\r')) {
+                            content[clen-1] = '\0';
+                            clen--;
+                        }
+                        list[count].content = strdup(content);
+                    } else {
+                        list[count].content = NULL;
+                    }
+                    count++;
+                }
+                free(obj); free(type); free(content);
+                curr = obj_end + 1;
             }
-            free(obj); free(type); free(content);
-            curr = obj_end + 1;
         }
-        p = end_arr;
     }
     *ops = list; return count;
 }

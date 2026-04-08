@@ -121,6 +121,7 @@ typedef struct {
     FileNode *root;
     ScrollState tree_scroll;
     int tree_selection;
+    time_t last_dir_modified;
     EditorBuffer editor;
     TerminalBuffer terminal;
     AIContext ai;

@@ -29,6 +29,15 @@ int main() {
                     load_file(&state, state.editor.filepath);
                 }
             }
+            
+            struct stat cur_dir_st;
+            if (stat(".", &cur_dir_st) == 0 && cur_dir_st.st_mtime > state.last_dir_modified) {
+                state.last_dir_modified = cur_dir_st.st_mtime;
+                if (state.root) free_file_tree(state.root);
+                state.root = create_file_node(".", ".", true, 0); 
+                state.root->is_expanded = true; 
+                load_directory(state.root);
+            }
         }
 
         erase();

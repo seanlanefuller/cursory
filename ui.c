@@ -93,6 +93,14 @@ void save_file(AppState *state) {
         fclose(f);
         struct stat st; if (stat(eb->filepath, &st) == 0) eb->last_modified = st.st_mtime;
         snprintf(state->last_action, sizeof(state->last_action), "Saved: %s", eb->filepath);
+        if (state->root) {
+            free_file_tree(state->root);
+            state->root = create_file_node(".", ".", true, 0);
+            state->root->is_expanded = true;
+            load_directory(state->root);
+            struct stat dst;
+            if (stat(".", &dst) == 0) state->last_dir_modified = dst.st_mtime;
+        }
     }
 }
 
@@ -312,7 +320,7 @@ void draw_ai_chat(AppState *state, Panel *p) {
         free(dt);
     }
 
-    int ew = p->width - 4; if (ew < 1) ew = 1;
+    int ew = p->width - 6; if (ew < 1) ew = 1;
     int total_h = 0;
     for (int i=0; i<state->ai.message_count; i++) {
         AIMessage *m = &state->ai.messages[i]; if (!m->content && !m->reasoning) continue;
@@ -1066,6 +1074,7 @@ void init_app(AppState *state) {
     state->panels[PANEL_AI].name = "Chat"; state->panels[PANEL_TERMINAL].name = "Terminal";
     state->active_panel = PANEL_FILE_TREE; state->running = true; state->last_action[0] = '\0';
     state->root = create_file_node(".", ".", true, 0); state->root->is_expanded = true; load_directory(state->root);
+    struct stat dst; if (stat(".", &dst) == 0) state->last_dir_modified = dst.st_mtime;
     state->tree_selection = 0; memset(&state->tree_scroll, 0, sizeof(ScrollState));
     state->editor.lines = malloc(sizeof(char*)); state->editor.lines[0] = strdup(""); state->editor.line_count = 1;
     state->editor.cursor_x = 0; state->editor.cursor_y = 0; memset(&state->editor.scroll, 0, sizeof(ScrollState));
@@ -1254,7 +1263,24 @@ void handle_input(AppState *state) {
             }
             else if (base_ch == KEY_LEFT && eb->cursor_x > 0) eb->cursor_x--;
             else if (base_ch == KEY_RIGHT && eb->cursor_x < (int)strlen(eb->lines[eb->cursor_y])) eb->cursor_x++;
-            else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) delete_char(state);
+            else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8 || ch == KEY_DC) {
+                if (sel->active) {
+                    Selection n = get_normalized_selection(sel);
+                    eb->cursor_x = n.end_col; eb->cursor_y = n.end_line;
+                    while (eb->cursor_y > n.start_line || (eb->cursor_y == n.start_line && eb->cursor_x > n.start_col)) {
+                        delete_char(state);
+                    }
+                    sel->active = 0;
+                } else if (ch != KEY_DC) {
+                    delete_char(state);
+                } else {
+                    if (eb->cursor_x < (int)strlen(eb->lines[eb->cursor_y]) || eb->cursor_y < eb->line_count - 1) {
+                        if (eb->cursor_x == (int)strlen(eb->lines[eb->cursor_y])) { eb->cursor_y++; eb->cursor_x = 0; }
+                        else { eb->cursor_x++; }
+                        delete_char(state);
+                    }
+                }
+            }
             else if (ch == '\n' || ch == KEY_ENTER) insert_newline(state);
             else if (ch >= 32 && ch < 127) insert_char(state, ch);
 
@@ -1298,17 +1324,48 @@ void handle_input(AppState *state) {
                 if (cb->cursor_x > nlen) cb->cursor_x = nlen;
             } else if (base_ch == KEY_LEFT && cb->cursor_x > 0) cb->cursor_x--;
             else if (base_ch == KEY_RIGHT && cb->cursor_x < (int)strlen(cb->lines[cb->cursor_y])) cb->cursor_x++;
-            else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8) {
-                if (cb->cursor_x > 0) {
-                    char *l = cb->lines[cb->cursor_y]; int len = strlen(l);
-                    memmove(l + cb->cursor_x - 1, l + cb->cursor_x, len - cb->cursor_x + 1); cb->cursor_x--;
-                } else if (cb->cursor_y > 0) {
-                    char *prev = cb->lines[cb->cursor_y-1]; char *curr = cb->lines[cb->cursor_y];
-                    int plen = strlen(prev); int clen = strlen(curr);
-                    cb->lines[cb->cursor_y-1] = realloc(cb->lines[cb->cursor_y-1], plen + clen + 1);
-                    strcat(cb->lines[cb->cursor_y-1], curr); cb->cursor_x = plen;
-                    free(curr); memmove(cb->lines + cb->cursor_y, cb->lines + cb->cursor_y + 1, sizeof(char*) * (cb->line_count - cb->cursor_y - 1));
-                    cb->line_count--; cb->cursor_y--;
+            else if (ch == KEY_BACKSPACE || ch == 127 || ch == 8 || ch == KEY_DC) {
+                if (sel->active) {
+                    Selection n = get_normalized_selection(sel);
+                    cb->cursor_x = n.end_col; cb->cursor_y = n.end_line;
+                    while (cb->cursor_y > n.start_line || (cb->cursor_y == n.start_line && cb->cursor_x > n.start_col)) {
+                        if (cb->cursor_x > 0) {
+                            int len = strlen(cb->lines[cb->cursor_y]);
+                            memmove(cb->lines[cb->cursor_y] + cb->cursor_x - 1, cb->lines[cb->cursor_y] + cb->cursor_x, len - cb->cursor_x + 1);
+                            cb->cursor_x--;
+                        } else if (cb->cursor_y > 0) {
+                            int prev_len = strlen(cb->lines[cb->cursor_y-1]);
+                            cb->lines[cb->cursor_y-1] = realloc(cb->lines[cb->cursor_y-1], prev_len + strlen(cb->lines[cb->cursor_y]) + 1);
+                            strcat(cb->lines[cb->cursor_y-1], cb->lines[cb->cursor_y]);
+                            free(cb->lines[cb->cursor_y]);
+                            memmove(cb->lines + cb->cursor_y, cb->lines + cb->cursor_y + 1, (cb->line_count - cb->cursor_y - 1) * sizeof(char*));
+                            cb->line_count--; cb->cursor_y--; cb->cursor_x = prev_len;
+                        }
+                    }
+                    sel->active = 0;
+                } else {
+                    bool do_del = false;
+                    if (ch == KEY_DC) {
+                        if (cb->cursor_x < (int)strlen(cb->lines[cb->cursor_y]) || cb->cursor_y < cb->line_count - 1) {
+                            if (cb->cursor_x == (int)strlen(cb->lines[cb->cursor_y])) { cb->cursor_y++; cb->cursor_x = 0; }
+                            else { cb->cursor_x++; }
+                            do_del = true;
+                        }
+                    } else do_del = true;
+                    
+                    if (do_del) {
+                        if (cb->cursor_x > 0) {
+                            char *l = cb->lines[cb->cursor_y]; int len = strlen(l);
+                            memmove(l + cb->cursor_x - 1, l + cb->cursor_x, len - cb->cursor_x + 1); cb->cursor_x--;
+                        } else if (cb->cursor_y > 0) {
+                            char *prev = cb->lines[cb->cursor_y-1]; char *curr = cb->lines[cb->cursor_y];
+                            int plen = strlen(prev); int clen = strlen(curr);
+                            cb->lines[cb->cursor_y-1] = realloc(cb->lines[cb->cursor_y-1], plen + clen + 1);
+                            strcat(cb->lines[cb->cursor_y-1], curr); cb->cursor_x = plen;
+                            free(curr); memmove(cb->lines + cb->cursor_y, cb->lines + cb->cursor_y + 1, sizeof(char*) * (cb->line_count - cb->cursor_y - 1));
+                            cb->line_count--; cb->cursor_y--;
+                        }
+                    }
                 }
             } else if (ch == '\n' || ch == KEY_ENTER) {
                 AppSendChat(state);
