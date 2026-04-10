@@ -26,7 +26,7 @@ int main() {
                 struct stat st;
                 if (stat(state.editor.filepath, &st) == 0 && st.st_mtime > state.editor.last_modified) {
                     log_debug("Auto-reloading file: %s", state.editor.filepath);
-                    load_file(&state, state.editor.filepath);
+                    buffer_load_file(&state.editor, state.editor.filepath);
                 }
             }
             
@@ -43,7 +43,11 @@ int main() {
         erase();
         attron(A_REVERSE); mvhline(0,0,' ',COLS); mvprintw(0,1," Cursory "); 
         mvprintw(0, 11, " F1=Menu ");
-        mvhline(LINES-1,0,' ',COLS); mvprintw(LINES-1,1," [%s] ", state.last_action); attroff(A_REVERSE);
+        
+        const char *st_text = (state.ai.is_waiting) ? "Streaming response..." : "Ready";
+        mvhline(LINES-1,0,' ',COLS); 
+        mvprintw(LINES-1,1," [%s] %s", st_text, state.last_action); 
+        attroff(A_REVERSE);
         
         draw_panels(&state); refresh(); handle_input(&state);
     }

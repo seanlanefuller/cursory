@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -O2
 LIBS = -lncurses -lutil -lcurl -lpthread
 
-SRCS = main.c ui.c ai.c utils.c
+SRCS = main.c ui.c ai.c utils.c buffer.c ui_tree.c ui_editor.c ui_chat.c ui_terminal.c
 OBJS = $(SRCS:.c=.o)
 
 all: cursory

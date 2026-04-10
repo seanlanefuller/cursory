@@ -92,34 +92,17 @@ size_t ai_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
 
 
 void apply_pending_edit(AppState *state, bool approved) {
-
     pthread_mutex_lock(&state->ai.mutex);
     if (!approved) {
         state->ai.is_waiting_approval = false;
         state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage)*(state->ai.message_count+2));
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Edit rejected by user.")};
-        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
+        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Edit rejected by user."), NULL};
+        state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup(""), NULL};
         goto cleanup;
     }
-    if (state->editor.lines) {
-        for (int i=0; i<state->editor.line_count; i++) free(state->editor.lines[i]);
-        free(state->editor.lines);
-    }
-    state->editor.lines = NULL;
-    state->editor.line_count = 0;
 
-    if (state->ai.pending_content && strlen(state->ai.pending_content) > 0) {
-        char *start = state->ai.pending_content;
-        char *newline;
-        while ((newline = strchr(start, '\n'))) {
-            *newline = '\0';
-            state->editor.lines = realloc(state->editor.lines, sizeof(char*)*(state->editor.line_count+1));
-            state->editor.lines[state->editor.line_count++] = strdup(start);
-            *newline = '\n';
-            start = newline + 1;
-        }
-        state->editor.lines = realloc(state->editor.lines, sizeof(char*)*(state->editor.line_count+1));
-        state->editor.lines[state->editor.line_count++] = strdup(start);
+    if (state->ai.pending_content) {
+        buffer_set_content(&state->editor, state->ai.pending_content);
     }
 
     if (strlen(state->ai.pending_path) > 0) {
@@ -127,8 +110,8 @@ void apply_pending_edit(AppState *state, bool approved) {
     }
 
     state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage)*(state->ai.message_count+2));
-    state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Applied successfully.")};
-    state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup("")};
+    state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup("Applied successfully."), NULL};
+    state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup(""), NULL};
 cleanup:
     state->ai.is_waiting_approval = false;
     if (state->ai.pending_content) { free(state->ai.pending_content); state->ai.pending_content = NULL; }
@@ -223,12 +206,14 @@ void* ai_thread_func(void *arg) {
 
     char *tools_ctx = strdup("### TOOLS:\n"
                              "You can edit the buffer using the following tools (output JSON to use):\n"
-                             "1. Patch existing content: {\"patch\": [{\"type\": \"replace\"|\"insert\"|\"delete\", \"line\": <line_number>, \"content\": \"<new_line_content>\"}]}\n"
+                             "1. Patch existing content: {\"tool\": \"patch\", \"patch\": [{\"type\": \"replace\"|\"insert\"|\"delete\", \"line\": <line_number>, \"content\": \"<line_content>\"}]}\n"
                              "2. Overwrite or Create new content in buffer: {\"tool\": \"write_file\", \"path\": \"<filename>\", \"content\": \"<entire_file_content>\"}\n"
-                             "Note: You can use \"\" instead of \"content\" for the code in write_file, and \"mode\" instead of \"tool\".\n"
-                             "3. Other tools: list_dir, read_file, grep_file (Standard JSON with \"tool\": \"name\", \"path\": \"...\")\n"
+                             "   Note: You can use \"mode\" instead of \"tool\", and \"code\" or \"\" instead of \"content\".\n"
+                             "3. Read a file from disk: {\"tool\": \"read_file\", \"path\": \"<filename>\"}\n"
+                             "4. Search for a pattern in a file: {\"tool\": \"grep_file\", \"path\": \"<filename>\", \"pattern\": \"<string_to_find>\"}\n"
+                             "5. List files in a directory: {\"tool\": \"list_dir\", \"path\": \"<directory_path>\"}\n"
                              "CRITICAL: Do NOT invent tools like `append_file`. Use `patch` with `insert` instead.\n"
-                             "CRITICAL: All changes are applied to the ACTIVE EDITOR BUFFER ONLY. They do NOT touch the filesystem.\n"
+                             "CRITICAL: All changes are applied to the ACTIVE EDITOR BUFFER ONLY. They do NOT touch the filesystem (except for read-only tools).\n"
                              "CRITICAL: When talking back to the user, you MUST respond in normal conversational plaintext! Do NOT wrap your conversational replies dynamically into explicit JSON structures!\n");
 
     char *full_p;
@@ -401,32 +386,21 @@ void* ai_thread_func(void *arg) {
     free(td->prompt); free(td); return NULL;
 }
 
-void AppSendChat(AppState *state) {
+void AppSendChat(AppState *state, const char *prompt) {
     pthread_mutex_lock(&state->ai.mutex);
     if (state->ai.is_waiting) { pthread_mutex_unlock(&state->ai.mutex); return; }
     if (state->ai.stream_buffer) { free(state->ai.stream_buffer); state->ai.stream_buffer = NULL; state->ai.stream_buffer_len = 0; }
     
-    int total_len = 0;
-    for (int i=0; i<state->ai.input.line_count; i++) total_len += strlen(state->ai.input.lines[i]) + 1;
-    char *prompt = malloc(total_len + 1); prompt[0] = '\0';
-    for (int i=0; i<state->ai.input.line_count; i++) {
-        strcat(prompt, state->ai.input.lines[i]);
-        if (i < state->ai.input.line_count - 1) strcat(prompt, "\n");
-    }
-    
-    if (strlen(prompt) == 0) { free(prompt); pthread_mutex_unlock(&state->ai.mutex); return; }
+    if (!prompt || strlen(prompt) == 0) { pthread_mutex_unlock(&state->ai.mutex); return; }
 
-    for (int i=0; i<state->ai.input.line_count; i++) free(state->ai.input.lines[i]);
-    free(state->ai.input.lines);
-    state->ai.input.lines = malloc(sizeof(char*)); state->ai.input.lines[0] = strdup("");
-    state->ai.input.line_count = 1; state->ai.input.cursor_x = 0; state->ai.input.cursor_y = 0;
+    buffer_clear(&state->ai.input);
 
     state->ai.messages = realloc(state->ai.messages, sizeof(AIMessage) * (state->ai.message_count + 2));
     state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("user"), strdup(prompt), NULL};
     state->ai.messages[state->ai.message_count++] = (AIMessage){strdup("assistant"), strdup(""), NULL};
     
     AIThreadData *td = malloc(sizeof(AIThreadData));
-    td->state = state; td->prompt = prompt;
+    td->state = state; td->prompt = strdup(prompt);
     pthread_t tid; pthread_create(&tid, NULL, ai_thread_func, td); pthread_detach(tid);
     state->ai.is_waiting = 1; state->ai.scroll.scroll_y = 999999;
     pthread_mutex_unlock(&state->ai.mutex);
