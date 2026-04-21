@@ -142,8 +142,23 @@ void draw_panels(AppState *state) {
 
     Panel *ap = &state->panels[(int)state->active_panel];
     if (state->active_panel == PANEL_EDITOR) {
-        curs_set(1); move(ap->y+1+state->editor.cursor_y-state->editor.scroll.scroll_y, ap->x+1+state->editor.cursor_x-state->editor.scroll_x);
-    } else if (state->active_panel == PANEL_TERMINAL) {
+        curs_set(1);
+        // Calculate visual positions accounting for tab expansion (3 spaces per tab)
+        char *line = state->editor.lines[state->editor.cursor_y];
+        int len = line ? strlen(line) : 0;
+        int visual_cursor_x = 0;
+        for (int i = 0; i < state->editor.cursor_x && i < len; i++) {
+            visual_cursor_x += (line[i] == '\t') ? 3 : 1;
+        }
+        int visual_scroll_x = 0;
+        for (int i = 0; i < state->editor.scroll_x && i < len; i++) {
+            visual_scroll_x += (line[i] == '\t') ? 3 : 1;
+        }
+        move(ap->y + 1 + state->editor.cursor_y - state->editor.scroll.scroll_y, ap->x + 1 + visual_cursor_x - visual_scroll_x);
+
+
+
+        } else if (state->active_panel == PANEL_TERMINAL) {
         curs_set(1); int last = state->terminal.base.line_count - 1;
         int sy = ap->y+1+(last-state->terminal.base.scroll.scroll_y);
         if (sy>ap->y && sy<ap->y+ap->height-1 && last >= 0 && state->terminal.base.lines[last]) 

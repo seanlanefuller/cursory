@@ -11,27 +11,53 @@ void draw_editor(AppState *state, Panel *p) {
     clamp_scroll(&eb->scroll);
     if (eb->cursor_x < eb->scroll_x) eb->scroll_x = eb->cursor_x;
     if (eb->cursor_x >= eb->scroll_x + vw) eb->scroll_x = eb->cursor_x - vw + 1;
-    if (eb->scroll_x < 0) eb->scroll_x = 0;
-
-    for (int i=0; i<vh; i++) {
+    if (eb->scroll_x < 0) eb->scroll_x = 0;    
+    for (int i = 0; i < vh; i++) {
         int ly = eb->scroll.scroll_y + i;
-        if (ly>=0 && ly<eb->line_count && eb->lines[ly]) {
+        if (ly >= 0 && ly < eb->line_count && eb->lines[ly]) {
             char *line = eb->lines[ly];
             int len = strlen(line);
             move(p->y + 1 + i, p->x + 1);
-            for (int x = 0; x < vw && (x + eb->scroll_x) < len; x++) {
-                int lx = x + eb->scroll_x;
+            
+            // New: Iterate by visual columns instead of buffer indices
+            int visual_x = 0;
+            int buffer_x = eb->scroll_x;
+            while (visual_x < vw && buffer_x < len) {
+                char c = line[buffer_x];
+                int width = (c == '\t') ? 3 : 1;
                 bool selected = false;
                 if (eb->selection.active) {
                     Selection n = get_normalized_selection(&eb->selection);
-                    if (ly > n.start_line && ly < n.end_line) selected = true;
-                    else if (ly == n.start_line && ly == n.end_line) selected = (lx >= n.start_col && lx < n.end_col);
-                    else if (ly == n.start_line) selected = (lx >= n.start_col);
-                    else if (ly == n.end_line) selected = (lx < n.end_col);
+                    if (ly > n.start_line && ly < n.end_line) {
+                        selected = true;
+                    }
+                    else if (ly == n.start_line && ly == n.end_line) {
+                        selected = (buffer_x >= n.start_col && buffer_x < n.end_col);
+                    }
+                    else if (ly == n.start_line) {
+                        selected = (buffer_x >= n.start_col);
+                    }
+                    else if (ly == n.end_line) {
+                        selected = (buffer_x < n.end_col);
+                    }
                 }
-                if (selected) attron(A_REVERSE);
-                addch(line[lx]);
-                if (selected) attroff(A_REVERSE);
+                for (int s = 0; s < width && visual_x < vw; s++) {
+                    if (selected) attron(A_REVERSE);
+                    if (c == '\t') {
+                        if (s == 0) {
+                                addch(182); // for the first tab space
+                        }
+                        else {
+                            addch(' ');
+                        }
+                    }
+                    else {
+                        addch(c);
+                    }
+                    if (selected) attroff(A_REVERSE);
+                    visual_x++;
+                }
+                buffer_x++;
             }
         }
     }
@@ -80,6 +106,10 @@ void handle_editor_input(AppState *state, int ch, int base_ch, bool shift) {
         }
     } else if (ch == '\n' || ch == KEY_ENTER) buffer_insert_newline(eb);
     else if (ch >= 32 && ch < 127) buffer_insert_char(eb, ch);
+    else if (ch == 9) {
+        //for (int i = 0; i < 4; i++) buffer_insert_char(eb, ' ');
+        buffer_insert_char(eb, '\t');
+    }
 
     if (shift) {
         if (!sel->active) { sel->active = 1; sel->start_line = old_y; sel->start_col = old_x; }
